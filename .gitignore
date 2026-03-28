@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Backup/working copies (not the main app)
+*.bak
+*.bak-*
+*-bak-*
+*-workingBut*
+*-working*
+*-broken*
+*-before-*
+
+# Node / Tauri (legacy frontend, not part of this app)
+node_modules/
+dist/
+.svelte-kit/
+bun.lock
+
+# Build artifacts
+src-tauri/target/
+
+# Temp files
+tmp.opml
+/tmp/
+
+# Preferences are user-specific
+# opml_outliner_prefs.json  # (uncomment if you don't want to track prefs)
