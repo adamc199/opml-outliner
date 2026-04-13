@@ -166,6 +166,7 @@ class MultiLineDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._editor_font = None
         self._text_color = "#000000"
+        self._bg_color = "#ffffff"
         self._disable_rich = False
         self._force_plain_role = Qt.ItemDataRole.UserRole + 9
 
@@ -178,12 +179,16 @@ class MultiLineDelegate(QStyledItemDelegate):
 
     def setTextColor(self, color_str: str):
         self._text_color = color_str
+
+    def setBgColor(self, color_str: str):
+        self._bg_color = color_str
     
     def paint(self, painter, option, index):
         text = index.data(Qt.ItemDataRole.DisplayRole) or ""
         is_html = bool(index.data(Qt.ItemDataRole.UserRole + 3))
 
         painter.save()
+        painter.setClipRect(option.rect)  # Prevent text overflow into adjacent rows
         from PyQt6.QtWidgets import QStyle
         is_selected = option.state & QStyle.StateFlag.State_Selected
 
@@ -268,14 +273,22 @@ class MultiLineDelegate(QStyledItemDelegate):
         return depth
 
     def _size_hint_text_width(self, option, index=None):
-        """Compute the text wrap width for sizeHint — must match what paint() will use."""
+        """Compute the text wrap width for sizeHint — derived from current viewport + depth.
+
+        Always use the live viewport width rather than option.rect.width(), which can be
+        stale immediately after a resize and causes sizeHint to return a height calculated
+        for the wrong wrap width, leaving rows too short and text bleeding into the row below.
+        """
         if option.widget and option.widget.viewport():
             viewport_w = option.widget.viewport().width()
+            tree_indent = option.widget.indentation() if hasattr(option.widget, 'indentation') else 20
             if index is not None and index.isValid():
                 depth = self._item_depth(index)
-                tree_indent = option.widget.indentation() if hasattr(option.widget, 'indentation') else 20
-                return max(120, viewport_w - depth * tree_indent - 8)
-            return max(120, viewport_w - 8)
+                # (depth + 1): the root decorator expand arrow consumes one indentation
+                # unit even at depth=0, so each item's text rect is (depth+1)*indent narrower.
+                return max(120, viewport_w - (depth + 1) * tree_indent - 8)
+            return max(120, viewport_w - tree_indent - 8)
+        # Last resort when no widget is available
         if option.rect.width() > 0:
             return max(120, option.rect.width() - 8)
         return 400
@@ -293,7 +306,7 @@ class MultiLineDelegate(QStyledItemDelegate):
             "  border-left: 2px solid #0066cc;"
             "  padding: 2px 4px;"
             f" color: {self._text_color};"
-            "  background: transparent;"
+            f" background: {self._bg_color};"
             "}"
         )
         if self._editor_font:
@@ -495,6 +508,7 @@ class OPMLOutliner(QMainWindow):
         self.delegate = MultiLineDelegate()
         self.delegate.setEditorFont(tree_font)
         self.delegate.setTextColor(self.text_color)
+        self.delegate.setBgColor(self.bg_color)
         def _on_image_loaded():
             self.tree.viewport().update()
             self.tree.scheduleDelayedItemsLayout()
@@ -832,6 +846,8 @@ class OPMLOutliner(QMainWindow):
                 background-color: transparent;
             }}
         """)
+        self.delegate.setTextColor(self.text_color)
+        self.delegate.setBgColor(self.bg_color)
 
     def add_link_to_node(self):
         """Add or edit link on current node"""
@@ -2007,19 +2023,14 @@ class OPMLOutliner(QMainWindow):
                 text = html.unescape(text).strip()
 
             if from_include:
-                # Strip all HTML except <img> tags so images render inline
-                display_text = re.sub(r'<(?!/?img\b)[^>]*>', '', text, flags=re.IGNORECASE)
-                has_img = bool(re.search(r'<img\b', display_text, re.IGNORECASE))
-
-                item = QTreeWidgetItem(par if par else self.tree, [display_text])
+                item = QTreeWidgetItem(par if par else self.tree, [text])
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
                 item.setData(0, Qt.ItemDataRole.UserRole + 9, True)
                 item.setData(0, Qt.ItemDataRole.UserRole + 8, False)
-                item.setData(0, Qt.ItemDataRole.UserRole + 3, has_img)
-                item.setData(0, Qt.ItemDataRole.DisplayRole, display_text)
                 item.setData(0, Qt.ItemDataRole.UserRole + 2, text)
                 if url:
                     item.setData(0, Qt.ItemDataRole.UserRole, url)
+                normal_items.append((item, elem))
             else:
                 item = QTreeWidgetItem(par if par else self.tree, [text])
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
