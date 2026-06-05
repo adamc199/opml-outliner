@@ -7,6 +7,7 @@ __pycache__/
 
 # Backup/working copies (not the main app)
 *.bak
+*.bak[0-9]
 *.bak-*
 *-bak-*
 *-workingBut*

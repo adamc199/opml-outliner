@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QTextEdit, QAbstractItemView,
     QSizePolicy
 )
-from PyQt6.QtCore import Qt, QTimer, QRect, QSize, QUrl
+from PyQt6.QtCore import Qt, QTimer, QRect, QSize, QUrl, QByteArray
 from PyQt6.QtGui import QKeySequence, QShortcut, QFont, QColor, QPainter, QTextDocument, QUndoStack, QUndoCommand
 
 
@@ -1971,20 +1971,28 @@ class OPMLOutliner(QMainWindow):
             tree = ET.parse(filename)
             root = tree.getroot()
             self.tree.clear()
-            
+
             self.tree.setUpdatesEnabled(False)
             body = root.find('.//body')
             if body is not None:
                 for outline in body.findall('outline'):
                     self.add_outline_to_tree(outline, None, from_include=False)
-            
+
+            if body is not None:
+                self._apply_expanded_state(body)
+
             self.tree.setUpdatesEnabled(True)
 
-            if self.tree.topLevelItemCount() > 0:
+            head = root.find('head')
+            restored_selection = False
+            if head is not None:
+                restored_selection = self._apply_session_state(head)
+
+            if not restored_selection and self.tree.topLevelItemCount() > 0:
                 first_item = self.tree.topLevelItem(0)
                 self.tree.setCurrentItem(first_item)
-                self.tree.setFocus()
-            
+            self.tree.setFocus()
+
             # Update file tracking
             self.current_file = filename
             self.last_file = filename
@@ -1998,6 +2006,45 @@ class OPMLOutliner(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to load file:\n{e}")
         finally:
             self._loading = False
+
+    def _apply_expanded_state(self, body_elem):
+        """Walk body OPML and tree in parallel, expanding nodes per _expanded attr."""
+        def walk(elem, item):
+            if elem.get('_expanded') == 'true' and item.childCount() > 0:
+                item.setExpanded(True)
+            children = elem.findall('outline')
+            for idx, child_elem in enumerate(children):
+                if idx < item.childCount():
+                    walk(child_elem, item.child(idx))
+        outlines = body_elem.findall('outline')
+        for idx, outline_elem in enumerate(outlines):
+            if idx < self.tree.topLevelItemCount():
+                walk(outline_elem, self.tree.topLevelItem(idx))
+
+    def _apply_session_state(self, head_elem):
+        """Restore selection, scroll, and window geometry from <head><state>.
+        Returns True if a selection was restored."""
+        state = head_elem.find('state')
+        if state is None:
+            return False
+        geom_hex = state.get('windowGeometry')
+        if geom_hex:
+            try:
+                self.restoreGeometry(QByteArray.fromHex(geom_hex.encode()))
+            except Exception:
+                pass
+        selected = False
+        sel_path = state.get('selectedPath')
+        if sel_path:
+            item = self._item_at_index_path(sel_path)
+            if item is not None:
+                self.tree.setCurrentItem(item)
+                selected = True
+        scroll_y = state.get('scrollY')
+        if scroll_y and scroll_y.isdigit():
+            sy = int(scroll_y)
+            QTimer.singleShot(0, lambda: self.tree.verticalScrollBar().setValue(sy))
+        return selected
 
     def add_outline_to_tree(self, outline_elem, parent_item, from_include=False):
         """Iterative (non-recursive) tree builder to avoid stack overflow on deep OPML."""
@@ -2237,20 +2284,71 @@ audio{{vertical-align:middle}}
             head = ET.SubElement(root, 'head')
             title = ET.SubElement(head, 'title')
             title.text = Path(filename).stem
-            
+
+            self._write_session_state(head)
+
             body = ET.SubElement(root, 'body')
-            
+
             for i in range(self.tree.topLevelItemCount()):
                 item = self.tree.topLevelItem(i)
                 self.item_to_outline(item, body)
-            
+
             tree = ET.ElementTree(root)
             ET.indent(tree, space='  ')
             tree.write(filename, encoding='UTF-8', xml_declaration=True)
-            
+
             QMessageBox.information(self, "Success", f"File saved!")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save file:\n{e}")
+
+    def _index_path_for_item(self, item):
+        """Return a slash-joined 0-based index path from root to this item."""
+        if item is None:
+            return None
+        parts = []
+        cur = item
+        while cur is not None:
+            parent = cur.parent()
+            if parent is None:
+                parts.insert(0, str(self.tree.indexOfTopLevelItem(cur)))
+                break
+            parts.insert(0, str(parent.indexOfChild(cur)))
+            cur = parent
+        return '/'.join(parts)
+
+    def _item_at_index_path(self, path_str):
+        """Inverse of _index_path_for_item. Returns the item or None."""
+        if not path_str:
+            return None
+        try:
+            indices = [int(p) for p in path_str.split('/') if p != '']
+        except ValueError:
+            return None
+        if not indices:
+            return None
+        if indices[0] >= self.tree.topLevelItemCount():
+            return None
+        cur = self.tree.topLevelItem(indices[0])
+        for idx in indices[1:]:
+            if cur is None or idx >= cur.childCount():
+                return None
+            cur = cur.child(idx)
+        return cur
+
+    def _write_session_state(self, head_elem):
+        """Persist selection, scroll position, and window geometry under <head>."""
+        state = ET.SubElement(head_elem, 'state')
+        sel_path = self._index_path_for_item(self.tree.currentItem())
+        if sel_path is not None:
+            state.set('selectedPath', sel_path)
+        try:
+            state.set('scrollY', str(self.tree.verticalScrollBar().value()))
+        except Exception:
+            pass
+        try:
+            state.set('windowGeometry', bytes(self.saveGeometry()).hex())
+        except Exception:
+            pass
 
     def item_to_outline(self, item, parent_elem):
         # Get original text (without triangles or icons)
@@ -2277,6 +2375,9 @@ audio{{vertical-align:middle}}
         include_url = item.data(0, Qt.ItemDataRole.UserRole + 1)
         if include_url:
             outline.set('xmlUrl', include_url)
+
+        if item.childCount() > 0 and item.isExpanded():
+            outline.set('_expanded', 'true')
 
         for i in range(item.childCount()):
             child = item.child(i)
