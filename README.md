@@ -19,7 +19,8 @@ A desktop OPML outliner built with Python and PyQt6. Designed for managing hiera
 - **Undo/redo** — full history for all edits
 - **Customisable appearance** — font, background colour, text colour, and line spacing; all preferences are persisted
 - **Recent files** menu
-- **Session restore** — remembers open file and expand/collapse state across launches
+- **Per-file state** — expand/collapse, current selection, scroll position, and window geometry are persisted inside the OPML on save and restored on open
+- **Launch restore** — the last-opened file is reopened on start
 - **Dark UI** by default; fully themeable
 
 ## Requirements
@@ -128,14 +129,29 @@ Copy any multi-line text to the clipboard, then use **Edit > Paste as Nodes**. E
 
 ## OPML Format
 
-The outliner reads and writes standard OPML 2.0. Node attributes used:
+The outliner reads and writes standard OPML 2.0. A few non-standard attributes and a `<state>` element are used to persist UI state inside the file itself; all are optional and ignored by any standards-compliant OPML reader.
+
+### `<outline>` attributes
 
 | Attribute | Purpose |
 |-----------|---------|
 | `text` | Node display text (may contain HTML tags) |
 | `url` | Hyperlink attached to the node |
-| `includeUrl` | Path or URL of an OPML file to embed |
-| `_expanded` | Persisted expand/collapse state |
+| `xmlUrl` | Path or URL of an OPML file to embed (include node) |
+| `_expanded` | `"true"` when the node has children and is expanded |
+
+### `<head><state>` attributes
+
+| Attribute | Purpose |
+|-----------|---------|
+| `selectedPath` | 0-based index path to the currently selected node (e.g. `0/2/1`) |
+| `scrollY` | Vertical scroll position of the tree view |
+| `windowGeometry` | Qt-encoded hex blob of window position/size; multi-monitor and maximized state aware |
+
+### Where state lives
+
+- **Inside the OPML file:** expand/collapse, selection, scroll, window geometry (written on every save)
+- **In `~/.config/opml-outliner/prefs.json`:** appearance preferences, last-opened file path, recent files
 
 ## License
 
